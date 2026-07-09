@@ -7,7 +7,7 @@ This repository is a record of continuous growth. I began building it after real
 
 # Engineering Notes
 
-> *"Don't document what you memorized. Document what you finally understood."*
+ *"Don't document what you memorized. Document what you finally understood."*
 
 Welcome to my Engineering Notes.
 
