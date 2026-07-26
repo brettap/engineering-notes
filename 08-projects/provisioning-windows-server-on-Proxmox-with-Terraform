@@ -1,0 +1,96 @@
+Here's a concise, GitHub-ready version for **Project 03**.
+
+---
+
+# Project 03 – Provisioning Windows Server on Proxmox with Terraform
+
+## Objective
+
+Automate the provisioning of a Windows Server virtual machine in Proxmox using Terraform instead of creating VMs manually through the web interface.
+
+## Technologies Used
+
+* Proxmox VE 9
+* Terraform
+* VS Code Remote SSH
+* Ubuntu Server
+* Git/GitHub
+
+## Skills Demonstrated
+
+* Infrastructure as Code (IaC)
+* Terraform providers and resources
+* Proxmox API authentication
+* Remote Linux administration
+* Git version control
+* Infrastructure troubleshooting
+
+## Workflow
+
+```text
+VS Code
+    │
+    ▼
+Terraform Configuration
+    │
+    ▼
+terraform plan
+    │
+    ▼
+terraform apply
+    │
+    ▼
+Proxmox API
+    │
+    ▼
+Windows Server VM Created
+```
+
+## Resources Provisioned
+
+* VM Name: **dc02**
+* VM ID: **200**
+* 2 vCPUs
+* 4 GB RAM
+* 80 GB Disk (local-zfs)
+* VirtIO Network Adapter
+* UEFI (OVMF)
+* QEMU Guest Agent Enabled
+
+## Challenges Encountered
+
+### HTTP 401 Authentication Failed
+
+Terraform initially failed to authenticate with the Proxmox API.
+
+**Root Cause**
+
+* API token authentication issue.
+
+**Resolution**
+
+* Verified API user and token.
+* Confirmed Administrator permissions on the root path (`/`) with **Propagate** enabled.
+* Regenerated the API token secret.
+* Updated `terraform.tfvars` with the new token.
+
+After correcting authentication, `terraform plan` and `terraform apply` completed successfully.
+
+## Outcome
+
+* Successfully provisioned a Windows Server VM entirely through Terraform.
+* Eliminated manual VM creation in the Proxmox GUI.
+* Established the foundation for fully automated infrastructure deployment.
+
+## Key Takeaways
+
+* Terraform communicates directly with the Proxmox REST API.
+* Infrastructure is defined as code, making deployments repeatable and version-controlled.
+* Authentication and API permissions are common troubleshooting areas when automating infrastructure.
+
+## Next Steps
+
+* Install Windows Server.
+* Automate Windows configuration with PowerShell.
+* Use Ansible to configure networking, install AD DS, promote the server to a Domain Controller, and validate Active Directory replication.
+* Build a fully automated lab deployment using Terraform and Ansible.
