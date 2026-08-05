@@ -1,0 +1,439 @@
+# RB-0021: UniFi Third-Party Gateway Site Repair (Correcting Stale Network Metadata)
+
+**Project:** UniFi Site Separation
+**Classification:** Engineering Runbook
+**Applies To:**
+
+* UniFi Network Application 10.4.x
+* Docker (LinuxServer.io)
+* MongoDB 7
+* Third-Party Gateway (pfSense / Netgate)
+* Self-hosted UniFi Controller
+
+---
+
+# Purpose
+
+Repair a UniFi Site whose displayed network does not match the actual management network after moving devices to a new Site.
+
+Example:
+
+GUI displays
+
+```
+192.168.1.0/24
+```
+
+Actual network
+
+```
+172.16.0.0/24
+```
+
+---
+
+# Symptoms
+
+Settings → Networks displays
+
+```
+Default
+192.168.1.0/24
+```
+
+while
+
+```
+Switch Management
+172.16.0.x
+
+AP
+172.16.0.x
+
+Gateway
+172.16.0.1
+```
+
+Everything functions correctly except the displayed subnet.
+
+---
+
+# Prerequisites
+
+* Root access to Ubuntu host
+* Docker installed
+* MongoDB password available
+* UniFi Controller running
+
+---
+
+# Step 1 — Verify Containers
+
+```bash
+docker ps
+```
+
+Expected
+
+```
+unifi-network-application
+unifi-db
+```
+
+---
+
+# Step 2 — Locate UniFi Data
+
+```bash
+docker exec -it unifi-network-application bash
+```
+
+```bash
+pwd
+```
+
+Expected
+
+```
+/usr/lib/unifi
+```
+
+Locate persistent storage
+
+```bash
+find / -maxdepth 3 -type d | grep -E "config|data|mongo|db"
+```
+
+Expected
+
+```
+/config
+/config/data
+/config/data/db
+```
+
+---
+
+# Step 3 — Create MongoDB Backup
+
+Load password
+
+```bash
+read -s -p "Mongo root password: " MONGO_ROOT_PASS
+echo
+```
+
+Create archive
+
+```bash
+docker exec -e MONGO_ROOT_PASS="$MONGO_ROOT_PASS" unifi-db sh -c \
+'mongodump \
+--host 127.0.0.1 \
+--port 27017 \
+--db unifi \
+--username root \
+--authenticationDatabase admin \
+--password "$MONGO_ROOT_PASS" \
+--archive=/tmp/unifi-prechange.archive \
+--gzip'
+```
+
+Copy archive
+
+```bash
+docker cp unifi-db:/tmp/unifi-prechange.archive \
+~/unifi-controller/unifi-prechange-$(date +%F-%H%M).archive
+```
+
+Verify
+
+```bash
+ls -lh ~/unifi-controller/*.archive
+```
+
+---
+
+# Step 4 — Enumerate Sites
+
+```bash
+docker exec -e MONGO_ROOT_PASS="$MONGO_ROOT_PASS" unifi-db sh -c \
+'mongosh --quiet \
+--username root \
+--authenticationDatabase admin \
+--password "$MONGO_ROOT_PASS" \
+unifi \
+--eval "db.site.find({}, {_id:1,name:1,desc:1}).toArray()"'
+```
+
+Example Output
+
+```
+Techworks Test Rack
+
+Site ID
+
+6a700754866d5a34bab24c01
+```
+
+---
+
+# Step 5 — Enumerate Network Objects
+
+```bash
+docker exec -e MONGO_ROOT_PASS="$MONGO_ROOT_PASS" unifi-db sh -c \
+'mongosh --quiet \
+--username root \
+--authenticationDatabase admin \
+--password "$MONGO_ROOT_PASS" \
+unifi \
+--eval "db.networkconf.find(
+{},
+{
+_id:1,
+site_id:1,
+name:1,
+purpose:1,
+vlan:1,
+vlan_enabled:1,
+ip_subnet:1,
+dhcpd_enabled:1,
+networkgroup:1
+}).toArray()"'
+```
+
+Locate the record matching the Site ID.
+
+---
+
+# Step 6 — Export the Record
+
+```bash
+docker exec -e MONGO_ROOT_PASS="$MONGO_ROOT_PASS" unifi-db sh -c \
+'mongosh --quiet \
+--username root \
+--authenticationDatabase admin \
+--password "$MONGO_ROOT_PASS" \
+unifi \
+--eval "printjson(
+db.networkconf.findOne(
+{_id:ObjectId(\"NETWORK_OBJECT_ID\")})
+)"'
+```
+
+Verify current values.
+
+Example
+
+```
+ip_subnet
+
+192.168.1.1/24
+
+dhcpd_start
+
+192.168.1.6
+
+dhcpd_stop
+
+192.168.1.254
+```
+
+---
+
+# Step 7 — Stop UniFi
+
+```bash
+docker stop unifi-network-application
+```
+
+MongoDB remains running.
+
+---
+
+# Step 8 — Update Metadata
+
+Replace
+
+```
+NETWORK_OBJECT_ID
+
+SITE_ID
+```
+
+with values from your environment.
+
+```bash
+docker exec -e MONGO_ROOT_PASS="$MONGO_ROOT_PASS" unifi-db sh -c \
+'mongosh --quiet \
+--username root \
+--authenticationDatabase admin \
+--password "$MONGO_ROOT_PASS" \
+unifi \
+--eval "
+db.networkconf.updateOne(
+{
+_id:ObjectId(\"NETWORK_OBJECT_ID\"),
+site_id:\"SITE_ID\",
+name:\"Default\"
+},
+{
+\$set:{
+ip_subnet:\"172.16.0.1/24\",
+dhcpd_start:\"172.16.0.6\",
+dhcpd_stop:\"172.16.0.254\"
+}
+}
+)
+"'
+```
+
+Expected
+
+```
+matchedCount:1
+
+modifiedCount:1
+```
+
+---
+
+# Step 9 — Verify Database
+
+```bash
+docker exec -e MONGO_ROOT_PASS="$MONGO_ROOT_PASS" unifi-db sh -c \
+'mongosh --quiet \
+--username root \
+--authenticationDatabase admin \
+--password "$MONGO_ROOT_PASS" \
+unifi \
+--eval "
+printjson(
+db.networkconf.findOne(
+{_id:ObjectId(\"NETWORK_OBJECT_ID\")},
+{
+ip_subnet:1,
+dhcpd_start:1,
+dhcpd_stop:1
+}
+))
+"'
+```
+
+Expected
+
+```
+ip_subnet
+
+172.16.0.1/24
+
+dhcpd_start
+
+172.16.0.6
+
+dhcpd_stop
+
+172.16.0.254
+```
+
+---
+
+# Step 10 — Restart UniFi
+
+```bash
+docker start unifi-network-application
+```
+
+Wait 30–60 seconds.
+
+---
+
+# Step 11 — Validate GUI
+
+Navigate to
+
+```
+Settings
+
+↓
+
+Networks
+```
+
+Expected
+
+```
+Default
+
+172.16.0.0/24
+```
+
+---
+
+# Validation Checklist
+
+✅ Switch online
+
+✅ AP online
+
+✅ Gateway reachable
+
+✅ Adoption maintained
+
+✅ GUI displays correct subnet
+
+✅ Clients connect successfully
+
+---
+
+# Rollback Procedure
+
+Stop UniFi
+
+```bash
+docker stop unifi-network-application
+```
+
+Restore MongoDB
+
+```bash
+docker exec -i unifi-db sh -c \
+'mongorestore \
+--drop \
+--gzip \
+--archive' \
+< ~/unifi-controller/unifi-prechange.archive
+```
+
+Restart
+
+```bash
+docker start unifi-network-application
+```
+
+---
+
+# Lessons Learned
+
+* Third-party gateway mode **does not synchronize Layer 3 metadata** from pfSense.
+* The displayed subnet in **Settings → Networks** is stored in the MongoDB `networkconf` collection.
+* Each UniFi Site has its own `networkconf` document.
+* The GUI prevents editing these fields, but they can be corrected directly in MongoDB after a verified backup.
+* Always update `ip_subnet`, `dhcpd_start`, and `dhcpd_stop` together to keep the document internally consistent.
+
+---
+
+## Git Commit
+
+```text
+docs(runbook): add UniFi third-party gateway metadata repair procedure
+
+- Added complete engineering runbook
+- Included MongoDB backup and rollback
+- Documented site discovery and network object identification
+- Included read-only validation queries
+- Added database repair commands
+- Added post-change verification checklist
+```
+
+---
+
