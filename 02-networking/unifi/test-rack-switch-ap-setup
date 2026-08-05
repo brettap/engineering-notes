@@ -1,0 +1,607 @@
+# KB-0007 - UniFi Test Rack Deployment, Adoption Troubleshooting, and Network Segmentation**
+
+---
+
+# Objective
+
+Deploy a portable UniFi-based mobile test rack that is completely independent from the production home network. The target design consists of:
+
+* **Production Network:** 192.168.1.0/24
+* **Mobile Test Rack:** 172.16.0.0/24
+
+The Test Rack is intended for client demonstrations, Wi-Fi surveys, network assessments, and field deployments.
+
+---
+
+# Hardware
+
+## Gateway
+
+* Netgate 1100
+* LAN: 172.16.0.1/24
+
+## Switching
+
+* UniFi USW Lite 8 PoE
+
+## Wireless
+
+* UniFi U6 Pro
+
+## Controller
+
+Ubuntu Server (Docker)
+
+Running:
+
+* UniFi Network Application
+* MongoDB
+* Prometheus
+* Grafana
+* Alertmanager
+* Blackbox Exporter
+* Portainer
+
+---
+
+# Initial Network Design
+
+```
+Comcast
+     │
+Netgate 1100
+172.16.0.1
+     │
+Port 5 (Uplink)
+USW Lite 8 PoE
+     │
+ ├── Port 1 - U6 Pro
+ └── Port 6 - TestBench Laptop
+```
+
+---
+
+# Problems Encountered
+
+---
+
+# Issue 1
+
+## Devices continuously failed adoption
+
+### Symptoms
+
+* Switch remained in "Adopting"
+* AP repeatedly failed adoption
+* Device unreachable messages
+* SSH worked
+* Inform URL appeared correct
+
+### Cause
+
+The devices still contained previous controller information.
+
+Simply changing sites inside UniFi did not remove the controller relationship.
+
+### Resolution
+
+Factory reset each device.
+
+Wait until:
+
+```
+Pending Adoption
+```
+
+appeared before sending another inform command.
+
+Avoid repeatedly issuing:
+
+```
+set-inform
+```
+
+before the controller has processed the adoption request.
+
+---
+
+# Issue 2
+
+## Controller still believed device already existed
+
+### Symptoms
+
+Device remained:
+
+```
+Waiting for Adoption
+```
+
+or
+
+```
+Adopting
+```
+
+with no progress.
+
+### Investigation
+
+Connected directly to MongoDB.
+
+Verified device records.
+
+Example:
+
+```
+use unifi
+
+db.device.find({
+ mac:"0c:ea:14:84:08:d9"
+})
+```
+
+Confirmed:
+
+* adopted=true
+* site_id
+* inform_ip
+
+### Resolution
+
+Factory reset AP again.
+
+Allowed controller to rediscover it.
+
+Controller then completed adoption successfully.
+
+---
+
+# Issue 3
+
+## AP visible as wired client but not as an Access Point
+
+### Symptoms
+
+Topology showed:
+
+```
+Unknown Client
+```
+
+connected to Port 1.
+
+No adoption button.
+
+### Cause
+
+Controller had not finished onboarding.
+
+The AP had obtained DHCP but had not yet registered.
+
+### Resolution
+
+Reset AP.
+
+Run:
+
+```
+set-inform http://172.16.0.3:8080/inform
+```
+
+Wait for:
+
+```
+Pending Adoption
+```
+
+Allow controller to finish.
+
+---
+
+# Issue 4
+
+## SSH password no longer worked
+
+### Symptoms
+
+```
+ssh ubnt@172.16.0.101
+```
+
+returned
+
+```
+Permission denied
+```
+
+### Cause
+
+After adoption, UniFi automatically replaced the default credentials with controller-managed credentials.
+
+Default:
+
+```
+ubnt
+ubnt
+```
+
+no longer existed.
+
+### Resolution
+
+Recovered controller credentials.
+
+Located:
+
+Settings
+
+↓
+
+Networks
+
+↓
+
+Local Credentials
+
+Generated new SSH credentials.
+
+Updated KeePass.
+
+Future SSH access should always use controller-managed credentials.
+
+---
+
+# Issue 5
+
+## Password confusion ("Password Spaghetti")
+
+Several different passwords existed simultaneously:
+
+* Ubuntu
+* UniFi Portal
+* MongoDB
+* SSH
+* pfSense
+* KeePass
+* OpenAI-generated credentials
+
+This created uncertainty during troubleshooting.
+
+### Resolution
+
+Created a single source of truth using KeePass.
+
+Every infrastructure password now stored immediately after creation.
+
+---
+
+# Issue 6
+
+## Incorrect Ubuntu timezone
+
+### Symptoms
+
+UniFi login times differed by four hours.
+
+Ubuntu reported:
+
+```
+UTC
+```
+
+instead of
+
+```
+America/New_York
+```
+
+### Resolution
+
+```
+sudo timedatectl set-timezone America/New_York
+```
+
+Verified:
+
+```
+timedatectl
+```
+
+Now reports:
+
+```
+System clock synchronized: yes
+NTP service: active
+Time zone: America/New_York
+```
+
+---
+
+# Issue 7
+
+## Preferred DNS incorrect
+
+Originally AP inherited
+
+```
+192.168.1.1
+```
+
+instead of
+
+```
+172.16.0.1
+```
+
+### Cause
+
+Controller migration and DHCP history.
+
+### Resolution
+
+Configured static infrastructure addresses.
+
+AP
+
+```
+IP
+172.16.0.101
+
+Gateway
+172.16.0.1
+
+Preferred DNS
+172.16.0.1
+```
+
+Switch
+
+```
+172.16.0.102
+```
+
+Netgate
+
+```
+172.16.0.1
+```
+
+---
+
+# Issue 8
+
+## Controller UI differences
+
+Numerous online tutorials referenced:
+
+```
+Settings
+→ System
+→ Advanced
+```
+
+Those options no longer exist in UniFi Network 10.x.
+
+### Discovery
+
+SSH credentials are now located under:
+
+```
+Settings
+
+↓
+
+Networks
+
+↓
+
+Local Credentials
+```
+
+This differs significantly from earlier UniFi versions.
+
+---
+
+# Issue 9
+
+## UniFi Controller on Docker
+
+Initially suspected:
+
+* Inform service
+* Docker networking
+* Port mapping
+
+Verified:
+
+```
+curl http://192.168.1.114:8080/inform
+```
+
+returned successfully.
+
+Also confirmed:
+
+```
+docker ps
+```
+
+showed
+
+8080
+
+8443
+
+3478
+
+all exposed correctly.
+
+Controller was functioning properly.
+
+---
+
+# Issue 10
+
+## Signal strength appeared lower than expected
+
+Observed
+
+```
+-48 dBm
+```
+
+while phone sat beside AP.
+
+Expected
+
+```
+-25
+to
+-35 dBm
+```
+
+### Findings
+
+Performance remained excellent.
+
+Measured:
+
+```
+Download
+410 Mbps
+
+Upload
+41.7 Mbps
+
+Rx Rate
+458 Mbps
+
+Tx Rate
+573 Mbps
+```
+
+Conclusion:
+
+RSSI alone is not sufficient to judge Wi-Fi quality.
+
+Performance metrics confirmed healthy operation.
+
+---
+
+# Final Working Configuration
+
+## Netgate 1100
+
+```
+172.16.0.1
+```
+
+---
+
+## U6 Pro
+
+```
+172.16.0.101
+Static
+```
+
+---
+
+## Lite 8 PoE
+
+```
+172.16.0.102
+Static
+```
+
+---
+
+## TestBench Laptop
+
+DHCP
+
+---
+
+## Wi-Fi
+
+SSID
+
+```
+Test-Rack-WiFi1
+```
+
+Successfully authenticated.
+
+Internet access confirmed.
+
+---
+
+# Lessons Learned
+
+1. Factory resetting devices is often faster than attempting to repair corrupted adoption states.
+
+2. Wait for **Pending Adoption** before issuing additional `set-inform` commands.
+
+3. UniFi stores adoption state in MongoDB; checking the database can confirm whether the controller already believes a device is adopted.
+
+4. Adoption replaces the default `ubnt/ubnt` SSH credentials with controller-managed credentials.
+
+5. Maintain all infrastructure credentials in a password manager to avoid confusion during deployments.
+
+6. Keep infrastructure devices on static IP addresses from the beginning.
+
+7. Synchronize system time and time zone before troubleshooting authentication or log discrepancies.
+
+8. Verify controller services (`8080`, `8443`, `3478`) before assuming an adoption problem.
+
+9. Modern UniFi releases have reorganized many administrative settings, so older documentation may no longer match the interface.
+
+---
+
+# Current Architecture
+
+```
+                    Home Network
+                  192.168.1.0/24
+                        │
+                 (Production LAN)
+                        │
+        ---------------------------------
+
+                    Test Rack
+                 172.16.0.0/24
+
+Comcast
+    │
+Netgate 1100
+172.16.0.1
+    │
+USW Lite 8 PoE
+172.16.0.102
+    │
+ ├── U6 Pro
+ │     172.16.0.101
+ │
+ └── TestBench Laptop (DHCP)
+```
+
+---
+
+## Project Status
+
+**Completed**
+
+* Netgate 1100 configured on 172.16.0.0/24
+* UniFi Controller operational in Docker
+* Lite 8 PoE adopted
+* U6 Pro adopted
+* Static infrastructure addressing implemented
+* Wi-Fi operational
+* Internet connectivity verified
+* SSH credentials standardized and documented
+* Time synchronization corrected
+* Test Rack isolated from the production network
+* Baseline wireless performance established
+
+This deployment provides a stable, portable network platform suitable for demonstrations, wireless site surveys, troubleshooting, and future client field work.
