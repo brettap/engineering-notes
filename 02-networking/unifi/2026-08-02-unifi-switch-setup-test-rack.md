@@ -355,15 +355,5 @@ Your screenshot actually demonstrates this. Your TestBench client is connected t
 
 ---
 
-## The really exciting part
-
-This means your **portable rack is already functioning as a deployable extension of your existing UniFi network**.
-
-Once the **Netgate 1100** arrives, you'll unplug the rack from your home LAN, connect it to the 1100's LAN port, and it will become a completely self-contained environment with its own addressing (such as `172.16.x.x`) while keeping the same operational workflow.
-
-At that point, you'll have two modes of operation:
-
-1. **Lab Mode** – connected to your home network for testing and learning.
-2. **Field Mode** – connected to the Netgate 1100 for client assessments.
 
 
