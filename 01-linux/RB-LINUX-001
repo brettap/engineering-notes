@@ -1,0 +1,915 @@
+# RB-LINUX-001 — Linux Identity, Groups, and Shared Directory Permissions
+
+**Lab:** Linux Administration Lab #001  
+**System:** DevOps02  
+**IP:** `192.168.1.137`  
+**Topics:** Users, Groups, Permissions, Ownership, Setgid, IAM Troubleshooting  
+**Status:** Completed / Verified
+
+---
+
+## 1. Objective
+
+Build a basic Linux identity and access environment representing a small company's application server.
+
+The lab provides practical experience with:
+
+- Linux users
+- Linux groups
+- Home directories
+- Login shells
+- Passwords
+- Group membership
+- File and directory ownership
+- File and directory permissions
+- Setgid
+- Shared application directories
+- Switching user contexts
+- Verifying authorization
+- Troubleshooting `Permission denied`
+
+---
+
+## 2. Lab Architecture
+
+```text
+                         DevOps02
+                      192.168.1.137
+                            │
+          ┌─────────────────┼─────────────────┐
+          │                 │                 │
+     developers         app-support       contractors
+          │                 │                 │
+     ┌────┴────┐            │                 │
+     │         │            │                 │
+   alice      bob         carol             david
+Developer  Developer    App Support       Contractor
+     │         │
+     └────┬────┘
+          │
+          ▼
+     /srv/webapp
+          │
+          ├── owner: root
+          ├── group: developers
+          ├── developers: read/write/execute
+          └── setgid enabled
+```
+
+---
+
+# 3. Group Administration
+
+## Create a Group
+
+```bash
+sudo groupadd <groupname>
+```
+
+Example:
+
+```bash
+sudo groupadd developers
+sudo groupadd app-support
+sudo groupadd contractors
+```
+
+## Check Groups
+
+Display the group database:
+
+```bash
+getent group
+```
+
+Check a particular group:
+
+```bash
+getent group developers
+```
+
+---
+
+# 4. User Administration
+
+The lab users were:
+
+| Username | Role | Functional Group |
+|---|---|---|
+| `alice` | Developer | `developers` |
+| `bob` | Developer | `developers` |
+| `carol` | Application Support | `app-support` |
+| `david` | Contractor | `contractors` |
+
+## Create a User
+
+Basic command:
+
+```bash
+useradd <username>
+```
+
+When creating an interactive user manually, remember that plain `useradd username` does **not necessarily satisfy all of our lab requirements by itself**.
+
+For example:
+
+```bash
+sudo useradd -m -s /bin/bash alice
+```
+
+Where:
+
+```text
+-m              create home directory
+-s /bin/bash    assign Bash as login shell
+alice           username
+```
+
+This distinction is important because account creation, home-directory creation, and shell assignment are separate configuration attributes.
+
+---
+
+# 5. Add Users to Groups
+
+Syntax:
+
+```bash
+sudo usermod -aG <groupname> <username>
+```
+
+Equivalent syntax:
+
+```bash
+sudo usermod -a -G <groupname> <username>
+```
+
+Examples:
+
+```bash
+sudo usermod -aG developers alice
+sudo usermod -aG developers bob
+sudo usermod -aG app-support carol
+sudo usermod -aG contractors david
+```
+
+### Important
+
+The `-a` option means **append**.
+
+When modifying supplementary groups, omitting `-a` can remove the user from other supplementary groups.
+
+---
+
+# 6. Verify User and Group Membership
+
+Use:
+
+```bash
+id <username>
+```
+
+Example:
+
+```bash
+id alice
+```
+
+Lab verification showed Alice belonged to both her account's primary group and the supplementary `developers` group:
+
+```text
+uid=1002(alice)
+gid=1005(alice)
+groups=1005(alice),1002(developers)
+```
+
+This confirmed that group assignment was working.
+
+---
+
+# 7. Verify Home Directory and Login Shell Configuration
+
+The account database can be inspected with:
+
+```bash
+getent passwd <username>
+```
+
+or:
+
+```bash
+cat /etc/passwd
+```
+
+A passwd entry contains fields including:
+
+```text
+username:x:UID:GID:comment:home:shell
+```
+
+For example:
+
+```text
+alice:x:1002:1005::/home/alice:/bin/bash
+```
+
+This verifies that the account configuration points to:
+
+```text
+Home:  /home/alice
+Shell: /bin/bash
+```
+
+To verify that the directory itself physically exists, also use:
+
+```bash
+ls -ld /home/alice
+```
+
+This distinction matters:
+
+```text
+/etc/passwd
+     │
+     └── says where the home directory SHOULD be
+
+ls -ld /home/alice
+     │
+     └── proves the directory actually EXISTS
+```
+
+---
+
+# 8. Create a Missing Home Directory
+
+If an existing account does not have its home directory:
+
+```bash
+sudo mkhomedir_helper <username>
+```
+
+Example:
+
+```bash
+sudo mkhomedir_helper alice
+```
+
+---
+
+# 9. Set or Change a User Password
+
+As an administrator:
+
+```bash
+sudo passwd <username>
+```
+
+Example:
+
+```bash
+sudo passwd alice
+```
+
+A user's password authenticates the user.
+
+It does **not** automatically authorize that user to use `sudo`.
+
+---
+
+# 10. Switch User Context
+
+Use:
+
+```bash
+su - <username>
+```
+
+Example:
+
+```bash
+su - alice
+```
+
+The `-` starts a login shell and loads the target user's login environment.
+
+This was useful for testing permissions from the actual user's security context.
+
+---
+
+# 11. Linux Permission Model
+
+Linux permission classes are:
+
+```text
+OWNER | GROUP | OTHER
+```
+
+They are **not necessarily**:
+
+```text
+root | group | users
+```
+
+`root` was the owner of `/srv/webapp` in this lab, but any account could potentially own a file or directory.
+
+Permissions are:
+
+```text
+r = read
+w = write
+x = execute/traverse
+```
+
+Example:
+
+```text
+rwxrwxr-x
+│  │  │
+│  │  └── other
+│  └───── group
+└──────── owner
+```
+
+---
+
+# 12. File vs. Directory Permissions
+
+This became a major lesson during the lab.
+
+For a **regular file**:
+
+```text
+r = read contents
+w = modify contents
+x = execute file
+```
+
+For a **directory**:
+
+```text
+r = list directory contents
+w = create/delete/rename directory entries
+x = traverse/access the directory
+```
+
+Therefore, a developer can potentially modify an existing file while being unable to create another file in the same directory.
+
+---
+
+# 13. Change Group Ownership
+
+Use:
+
+```bash
+sudo chgrp <group> <path>
+```
+
+Example:
+
+```bash
+sudo chgrp developers /srv/webapp
+```
+
+This changes the object's owning group.
+
+Conceptually:
+
+```text
+/srv/webapp
+
+Before:
+owner: root
+group: root
+
+       │ chgrp developers
+       ▼
+
+After:
+owner: root
+group: developers
+```
+
+For recursive changes when intentionally required:
+
+```bash
+sudo chgrp -R developers /srv/webapp
+```
+
+Use recursive operations carefully.
+
+---
+
+# 14. Grant Group Permissions
+
+Symbolic permissions can be used:
+
+```bash
+chmod g+rwx <path>
+```
+
+Example:
+
+```bash
+sudo chmod g+rwx /srv/webapp
+```
+
+Where:
+
+```text
+g = group
++ = add permission
+r = read
+w = write
+x = execute/traverse
+```
+
+For directories, `w` was especially important because developers needed to create files.
+
+---
+
+# 15. Numeric Permissions
+
+Example:
+
+```bash
+sudo chmod 770 /srv/webapp
+```
+
+Breakdown:
+
+```text
+7 = rwx
+7 = rwx
+0 = ---
+```
+
+Therefore:
+
+```text
+owner = rwx
+group = rwx
+other = ---
+```
+
+This would provide:
+
+```text
+OWNER        GROUP          OTHER
+ rwx          rwx            ---
+  │            │              │
+root       developers     everyone else
+```
+
+Whether `770` or a less restrictive mode such as `2775` is appropriate depends on the application's access requirements.
+
+---
+
+# 16. Setgid on Shared Directories
+
+Enable setgid with:
+
+```bash
+sudo chmod g+s <directory>
+```
+
+Example:
+
+```bash
+sudo chmod g+s /srv/webapp
+```
+
+On a shared **directory**, setgid causes newly created files and subdirectories to inherit the directory's owning group.
+
+Example:
+
+```text
+/srv/webapp
+group = developers
+setgid = enabled
+       │
+       ├── Alice creates alice.txt
+       │
+       ▼
+alice.txt
+group = developers
+       │
+       ▼
+Bob can receive group-based access
+```
+
+A directory listing may display setgid as:
+
+```text
+drwxrwsr-x
+      ^
+      s
+```
+
+The `s` occupies the group-execute position and indicates setgid is active while group execute/traverse is also enabled.
+
+---
+
+# 17. Changing Owner and Group Together
+
+Syntax:
+
+```bash
+sudo chown <user>:<group> <path>
+```
+
+Example:
+
+```bash
+sudo chown alice:developers /shared_directory
+```
+
+Then permissions could be assigned:
+
+```bash
+sudo chmod 750 /shared_directory
+```
+
+This produces:
+
+```text
+owner alice       = rwx
+group developers  = r-x
+other             = ---
+```
+
+### Important clarification
+
+`chown user:group` does **not** give one specific user an additional permission entry.
+
+It changes the object's **owner and owning group**.
+
+If the requirement is:
+
+> Give Alice additional access while leaving the existing owner/group structure unchanged.
+
+Linux ACLs may be more appropriate:
+
+```bash
+setfacl -m u:alice:rwX /shared_directory
+```
+
+ACLs will be covered in a later lab.
+
+---
+
+# 18. Incident Encountered During Lab
+
+## INC-1002A — Developers Cannot Create Application Files
+
+### Symptoms
+
+Developers could access an existing test file but could not create another file under:
+
+```text
+/srv/webapp
+```
+
+Alice was confirmed to belong to:
+
+```text
+developers
+```
+
+The directory was inspected:
+
+```bash
+ls -ld /srv/webapp
+```
+
+Result:
+
+```text
+drwxr-sr-x root developers /srv/webapp
+```
+
+Alice's membership was inspected:
+
+```bash
+id alice
+```
+
+Result showed:
+
+```text
+alice → developers
+```
+
+---
+
+# 19. Root Cause Analysis
+
+Break down the directory permissions:
+
+```text
+d | rwx | r-s | r-x
+    │      │     │
+    │      │     └── other
+    │      └──────── group: developers
+    └─────────────── owner: root
+```
+
+The group had:
+
+```text
+r-s
+```
+
+The missing permission was:
+
+```text
+w
+```
+
+Therefore:
+
+```text
+Alice
+  │
+  ├── authenticated ................ YES
+  ├── developers member ............ YES
+  ├── can access directory ......... YES
+  ├── can read existing resources .. YES
+  │
+  └── can create directory entry ... NO
+                                      │
+                                      ▼
+                              Permission denied
+```
+
+The directory itself lacked group write permission.
+
+---
+
+# 20. Resolution
+
+Group write permission was granted to the shared application directory.
+
+After remediation, the effective design became:
+
+```text
+                   /srv/webapp
+                        │
+                root:developers
+                        │
+                  group = rwx
+                  setgid = ON
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+           alice                  bob
+        developers             developers
+             │                     │
+             ├── create ───────────┤
+             │                     │
+             └──── shared files ───┘
+```
+
+---
+
+# 21. Verification
+
+The fix was not considered complete merely because `ls` showed the expected permissions.
+
+Functional testing was performed.
+
+### Alice
+
+Switched to Alice's account:
+
+```bash
+su - alice
+```
+
+Alice successfully created another file under `/srv/webapp`.
+
+### Bob
+
+Switched to Bob's account:
+
+```bash
+su - bob
+```
+
+Bob successfully edited and saved the file Alice created.
+
+This proved **cross-developer collaboration**, not merely directory visibility.
+
+---
+
+# 22. Why Sudo Failed for Alice
+
+During troubleshooting, attempting to execute an administrative command as Alice produced:
+
+```text
+alice is not in the sudoers file
+```
+
+This was expected.
+
+The lab specifically required developers **not** to receive administrative privileges.
+
+The security model should be:
+
+```text
+Alice's password
+      │
+      ▼
+Authentication
+"Are you Alice?"
+      │
+     YES
+      │
+      ▼
+Group membership
+"Is Alice a developer?"
+      │
+     YES
+      │
+      ▼
+Filesystem permissions
+"What may developers do here?"
+      │
+      ▼
+read/write/traverse
+```
+
+Not:
+
+```text
+Permission problem
+       │
+       ▼
+Give developer sudo
+       │
+       ▼
+Bypass access controls
+```
+
+The correct principle is:
+
+> Grant access to the required resource rather than unnecessarily elevating the user's system privileges.
+
+---
+
+# 23. Troubleshooting Workflow
+
+```text
+User reports:
+"Permission denied"
+        │
+        ▼
+Confirm affected identity
+        │
+        ▼
+id username
+        │
+        ▼
+Correct group membership?
+     /         \
+   NO           YES
+   │             │
+Fix group        ▼
+membership   Inspect resource
+                  │
+                  ▼
+             ls -ld directory
+                  │
+          ┌───────┼────────┐
+          │       │        │
+        owner    group   permissions
+          │       │        │
+          └───────┼────────┘
+                  ▼
+          Check required rwx
+                  │
+                  ▼
+            Correct problem
+                  │
+                  ▼
+          Test as affected user
+                  │
+                  ▼
+          Test another group user
+                  │
+                  ▼
+               VERIFIED
+```
+
+---
+
+# 24. Command Reference
+
+```bash
+# Create group
+sudo groupadd <groupname>
+
+# Display groups
+getent group
+
+# Inspect specific group
+getent group <groupname>
+
+# Create interactive user with home directory and Bash
+sudo useradd -m -s /bin/bash <username>
+
+# Add supplementary group
+sudo usermod -aG <groupname> <username>
+
+# Verify identity and groups
+id <username>
+
+# Inspect passwd entry
+getent passwd <username>
+
+# Verify physical home directory
+ls -ld /home/<username>
+
+# Create missing home directory
+sudo mkhomedir_helper <username>
+
+# Set/change password
+sudo passwd <username>
+
+# Switch user
+su - <username>
+
+# Inspect directory ownership and permissions
+ls -ld <directory>
+
+# Change group ownership
+sudo chgrp <group> <directory>
+
+# Add group rwx permissions
+sudo chmod g+rwx <directory>
+
+# Set numeric permissions
+sudo chmod 770 <directory>
+
+# Enable setgid
+sudo chmod g+s <directory>
+
+# Change owner and group
+sudo chown <user>:<group> <path>
+```
+
+---
+
+# 25. Lessons Learned
+
+1. Linux permissions are evaluated using **owner, group, and other**.
+
+2. File permissions and directory permissions have different operational effects.
+
+3. Membership in the correct group does not automatically provide write access. The resource must grant that group the appropriate permission.
+
+4. Directory `w` permission is required to create/delete/rename entries.
+
+5. Directory `x` means traversal rather than execution in the normal file sense.
+
+6. Setgid is useful for maintaining group ownership in collaborative directories.
+
+7. A user's password provides authentication; it does not automatically provide sudo authorization.
+
+8. Developers should not receive sudo merely to work around application-directory permissions.
+
+9. `chown user:group` changes ownership; it is not the mechanism for granting arbitrary additional users access.
+
+10. Administrative verification should include an actual functional test from the affected user's security context.
+
+11. Testing collaboration requires more than proving Alice can create a file. Testing that Bob can subsequently modify it validates the shared-access design.
+
+---
+
+# 26. Completed Lab State
+
+```text
+DEVOPS02
+│
+├── Identity
+│   ├── alice ───── developers
+│   ├── bob ─────── developers
+│   ├── carol ───── app-support
+│   └── david ───── contractors
+│
+├── Accounts
+│   ├── Home directories verified
+│   ├── /bin/bash configured
+│   └── No unnecessary sudo access
+│
+├── Application Storage
+│   └── /srv/webapp
+│       ├── group: developers
+│       ├── developer write access
+│       └── setgid
+│
+└── Functional Testing
+    ├── Alice creates file .............. PASS
+    ├── Bob edits Alice's file .......... PASS
+    └── Shared developer access ......... VERIFIED
+```
+
+**Lab #001 Status: COMPLETE**
