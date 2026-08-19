@@ -5,6 +5,9 @@ LOG_FILE="/var/log/server-autoupdate.log"
 
 # Identify server
 HOSTNAME=$(hostname)
+EMAIL_TO="support@4techworks.com"
+EMAIL_FROM="4techworks@gmail.com"
+REPORT_FILE="/tmp/sys-update-report.txt"
 
 echo "=== Update Started: $(date) ===" >> "$LOG_FILE"
 echo "Host: $HOSTNAME" >> "$LOG_FILE"
@@ -73,6 +76,7 @@ fi
 
 # Check whether a reboot is required
 if [ -f /var/run/reboot-required ]; then
+    REBOOT_REQUIRED="YES"
     echo "Reboot Required: YES" >> "$LOG_FILE"
 
     if [ -f /var/run/reboot-required.pkgs ]; then
@@ -80,11 +84,55 @@ if [ -f /var/run/reboot-required ]; then
         cat /var/run/reboot-required.pkgs >> "$LOG_FILE"
     fi
 else
+    REBOOT_REQUIRED="NO"
     echo "Reboot Required: NO" >> "$LOG_FILE"
 fi
 
-echo "Update Result: SUCCESS" >> "$LOG_FILE"
+UPDATE_RESULT="SUCCESS"
+
+echo "Update Result: $UPDATE_RESULT" >> "$LOG_FILE"
 echo "=== Update Finished: $(date) ===" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
+
+# Build email report
+{
+    echo "Host: $HOSTNAME"
+    echo "Repository Refresh: SUCCESS"
+    echo "Package Upgrade: SUCCESS"
+    echo "APT Cache Cleanup: SUCCESS"
+    echo "Packages Remaining Upgradeable: $UPGRADEABLE_COUNT"
+    echo "Reboot Required: $REBOOT_REQUIRED"
+    echo "Update Result: $UPDATE_RESULT"
+
+    if [ "$UPGRADEABLE_COUNT" -gt 0 ]; then
+        echo ""
+        echo "Remaining Upgradeable Packages:"
+        apt list --upgradeable 2>/dev/null | tail -n +2
+    fi
+
+    if [ "$REBOOT_REQUIRED" = "YES" ] && [ -f /var/run/reboot-required.pkgs ]; then
+        echo ""
+        echo "Reboot-triggering packages:"
+        cat /var/run/reboot-required.pkgs
+    fi
+} > "$REPORT_FILE"
+
+# Build email subject
+if [ "$REBOOT_REQUIRED" = "YES" ]; then
+    EMAIL_SUBJECT="[Linux Fleet][$HOSTNAME] Update SUCCESS - REBOOT REQUIRED"
+else
+    EMAIL_SUBJECT="[Linux Fleet][$HOSTNAME] Update SUCCESS"
+fi
+
+# Send email report
+{
+    echo "Subject: $EMAIL_SUBJECT"
+    echo "To: $EMAIL_TO"
+    echo "From: $EMAIL_FROM"
+    echo ""
+    cat "$REPORT_FILE"
+} | msmtp "$EMAIL_TO"
+
+rm -f "$REPORT_FILE"
 
 exit 0
