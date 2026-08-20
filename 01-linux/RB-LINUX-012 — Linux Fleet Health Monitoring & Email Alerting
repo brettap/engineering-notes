@@ -1,0 +1,468 @@
+# RB-LINUX-012 — Linux Fleet Health Monitoring & Email Alerting
+
+## Objective
+
+Build and validate a reusable Bash-based Linux health-monitoring system capable of:
+
+- Checking critical systemd services
+- Checking listening TCP ports
+- Monitoring filesystem utilization
+- Monitoring memory utilization
+- Detecting pending package updates
+- Classifying system health
+- Returning machine-readable exit codes
+- Sending email alerts for abnormal conditions
+- Detecting controlled service failures
+- Supporting a Git → validation → deployment workflow
+
+---
+
+## Architecture
+
+```text
+                Linux Server
+                     │
+                     ▼
+          fleet-healthcheck.sh
+                     │
+       ┌─────────────┼─────────────┐
+       │             │             │
+       ▼             ▼             ▼
+    Services       Ports        Resources
+       │             │             │
+       │             │        ┌────┴────┐
+       │             │        │         │
+       │             │       Disk     Memory
+       │             │
+       └─────────────┼──────────────┐
+                     │              │
+                     ▼              ▼
+              Pending Updates    Results
+                                     │
+                              ┌──────┼──────┐
+                              ▼      ▼      ▼
+                           HEALTHY WARNING CRITICAL
+                              │      │      │
+                              ▼      ▼      ▼
+                           exit 0  exit 2  exit 1
+                              │      │      │
+                              │      └──┬───┘
+                              │         ▼
+                              │       msmtp
+                              │         │
+                              │         ▼
+                              │   Management Email
+                              │
+                              └── No Alert
+```
+
+## Health classifications
+
+| Condition | Classification | Exit Code | Email |
+|---|---|---:|---|
+| All checks normal | HEALTHY | `0` | No |
+| Administrative/resource warning | WARNING | `2` | Yes |
+| Service/resource failure | CRITICAL | `1` | Yes |
+
+Examples:
+
+```text
+HEALTHY
+PASS: Service nginx is active
+PASS: TCP port 80 is listening
+PASS: Root filesystem utilization is 10%
+```
+
+```text
+WARNING
+WARN: Root filesystem utilization is 84%
+```
+
+```text
+CRITICAL
+FAIL: Service nginx is not active
+FAIL: TCP port 80 is not listening
+```
+
+---
+
+# Functional testing performed
+
+We established a known-good baseline on `devops02`.
+
+The script successfully detected:
+
+```text
+ssh
+nginx
+noc-app
+docker
+containerd
+qemu-guest-agent
+```
+
+and TCP:
+
+```text
+22
+80
+9100
+```
+
+We deliberately stopped nginx:
+
+```bash
+sudo systemctl stop nginx
+```
+
+The monitor correctly detected:
+
+```text
+FAIL: Service nginx is not active
+FAIL: TCP port 80 is not listening
+
+Failures Detected: 2
+Overall Status: CRITICAL
+```
+
+We restored the service:
+
+```bash
+sudo systemctl start nginx
+```
+
+and the monitor returned to:
+
+```text
+Failures Detected: 0
+Overall Status: HEALTHY
+```
+
+This demonstrated the complete operational cycle:
+
+```text
+KNOWN GOOD
+    ↓
+CONTROLLED FAILURE
+    ↓
+DETECTION
+    ↓
+ALERT
+    ↓
+INVESTIGATION
+    ↓
+REMEDIATION
+    ↓
+VERIFICATION
+```
+
+---
+
+# Resource monitoring
+
+Disk thresholds were introduced:
+
+```bash
+DISK_WARNING=80
+DISK_CRITICAL=90
+```
+
+Logic:
+
+```text
+< 80%       PASS
+80–89%      WARNING
+>= 90%      CRITICAL
+```
+
+Memory monitoring followed the same model:
+
+```bash
+MEMORY_WARNING=80
+MEMORY_CRITICAL=90
+```
+
+A controlled disk-warning test was performed by lowering the threshold rather than dangerously filling the filesystem.
+
+The resulting state was:
+
+```text
+WARN: Root filesystem utilization is 10%
+
+Warnings Detected: 1
+Failures Detected: 0
+Overall Status: WARNING
+```
+
+with:
+
+```text
+exit code = 2
+```
+
+The corresponding WARNING email was successfully received.
+
+---
+
+# Package-management monitoring
+
+The script was extended to determine whether packages are pending:
+
+```bash
+apt list --upgradeable
+```
+
+This connects RB-012 directly with the update-management work from RB-009/RB-011.
+
+Conceptually:
+
+```text
+fleet-healthcheck.sh
+       │
+       ▼
+DETECT
+"updates pending"
+       │
+       ▼
+Administrator
+       │
+       ▼
+sys-update.sh
+       │
+       ▼
+REMEDIATE
+       │
+       ▼
+fleet-healthcheck.sh
+       │
+       ▼
+VERIFY
+```
+
+---
+
+# Email alerting
+
+The existing `msmtp` infrastructure was reused.
+
+Healthy systems remain quiet:
+
+```text
+HEALTHY
+   ↓
+exit 0
+   ↓
+No email
+```
+
+Abnormal systems generate alerts:
+
+```text
+WARNING / CRITICAL
+        ↓
+Build report
+        ↓
+msmtp
+        ↓
+support@4techworks.com
+        ↓
+Management phone notification
+```
+
+Alerts include host identity, overall status, warning/failure counts, and captured warning/failure messages.
+
+---
+
+# Development and deployment workflow
+
+During the lesson we discovered that editing `/usr/local/bin` directly through VS Code Remote SSH produced:
+
+```text
+EACCES: permission denied
+```
+
+This led to a better deployment model.
+
+The editable source lives under the Git repository:
+
+```text
+engineering-notes/
+└── 01-linux/
+    └── Management-scripts/
+        └── fleet-healthcheck.sh
+```
+
+The production copy lives at:
+
+```text
+/usr/local/bin/fleet-healthcheck.sh
+```
+
+Workflow:
+
+```text
+VS Code
+   ↓
+Management-scripts/
+   ↓
+Edit
+   ↓
+bash -n
+   ↓
+Git
+   ↓
+sudo install
+   ↓
+/usr/local/bin/
+```
+
+Deployment:
+
+```bash
+sudo install -m 755 \
+fleet-healthcheck.sh \
+/usr/local/bin/fleet-healthcheck.sh
+```
+
+Integrity can be verified:
+
+```bash
+sha256sum fleet-healthcheck.sh
+sha256sum /usr/local/bin/fleet-healthcheck.sh
+```
+
+Matching hashes prove that the deployed artifact matches the source.
+
+---
+
+# Important discovery: monitoring must understand host roles
+
+Deploying the script to `ubuntu-devops01` produced:
+
+```text
+FAIL: Service nginx is not active
+FAIL: Service noc-app is not active
+```
+
+Investigation showed:
+
+```bash
+systemctl status nginx
+```
+
+returned:
+
+```text
+Unit nginx.service could not be found.
+```
+
+and the same was true for `noc-app`.
+
+The server wasn't necessarily unhealthy.
+
+**The monitoring baseline was wrong for that server.**
+
+We also discovered a bug in the original port check:
+
+```bash
+ss -ltn | grep -q ":80"
+```
+
+could falsely match:
+
+```text
+:8000
+:8080
+:8081
+```
+
+An exact socket filter is preferable:
+
+```bash
+ss -ltn "sport = :80"
+```
+
+This produced one of the most important lessons of RB-012:
+
+> A monitoring system must compare a server against its intended state, not against another server's configuration.
+
+---
+
+# Next lesson boundary
+
+This is where RB-LINUX-012 ends.
+
+The next lesson should become:
+
+## RB-LINUX-013 — Host-Specific Configuration Management
+
+Instead of:
+
+```bash
+check_service nginx
+check_service noc-app
+check_service docker
+```
+
+hard-coded into one script, we'll move toward:
+
+```text
+                    Git
+                     │
+              Common Script
+                     │
+       ┌─────────────┼─────────────┐
+       ▼             ▼             ▼
+   devops01       devops02      locator01
+       │             │             │
+       ▼             ▼             ▼
+ host config     host config    host config
+```
+
+That lesson can introduce:
+
+- `/etc/techworks/healthcheck.conf`
+- `EXPECTED_SERVICES`
+- `EXPECTED_PORTS`
+- Bash `for` loops
+- loading configuration with `source`
+- different server roles
+- Git-managed configuration
+- canary deployment
+- eventual Ansible inventory/roles
+
+That's substantial enough to deserve its own runbook.
+
+# Command Reference
+
+| Command / Construct | Purpose |
+|---|---|
+| `systemctl is-active SERVICE` | Check service state |
+| `systemctl is-active --quiet SERVICE` | Machine-friendly service-state check |
+| `systemctl stop SERVICE` | Stop service |
+| `systemctl start SERVICE` | Start service |
+| `systemctl status SERVICE` | Inspect service |
+| `systemctl list-units --type=service` | List systemd services |
+| `journalctl -u SERVICE` | Inspect service journal |
+| `ss -ltn` | Display listening TCP sockets |
+| `ss -ltnp` | Include owning process |
+| `ss -ltn "sport = :80"` | Match TCP port 80 exactly |
+| `lsof -i :80` | Find processes using port 80 |
+| `ps -fp PID` | Detailed process information |
+| `ps -p PID -o args=` | Display process command line |
+| `df -P /` | Filesystem utilization in predictable format |
+| `free` / `free -h` | Memory statistics |
+| `apt list --upgradeable` | Show pending package upgrades |
+| `grep -q` | Quiet pattern matching via exit status |
+| `awk` | Extract/process structured text |
+| `$1` | First positional function/script argument |
+| `((COUNT++))` | Increment Bash numeric variable |
+| `$'\n'` | Bash newline character |
+| `printf "%s"` | Controlled string output |
+| `bash -n SCRIPT` | Validate Bash syntax without execution |
+| `echo $?` | Inspect previous command's exit code |
+| `sha256sum FILE` | Calculate file integrity hash |
+| `install -m 755` | Deploy a file with specified permissions |
+| `exit 0` | Successful/healthy execution |
+| `exit 1` | Critical/failure execution |
+| `exit 2` | Warning execution |
