@@ -1,0 +1,305 @@
+# RB-LINUX-017 — Home Internet Outage Monitoring
+
+| Field | Value |
+|---|---|
+| Runbook ID | RB-LINUX-017 |
+| System | Home monitoring stack |
+| Dashboard | Home Internet Outage Monitoring |
+| Platform | Blackbox Exporter, Prometheus, Grafana 12.4 |
+| Status | Frozen baseline |
+| Last verified | 2026-08-24 |
+
+## Purpose
+
+This runbook documents the frozen baseline configuration of the **Home Internet Outage Monitoring** Grafana dashboard. The dashboard provides three complementary views:
+
+- whether the gateway and external targets were reachable at a given time;
+- whether latency degraded before or during an incident; and
+- the rolling availability of an external target over the preceding hour.
+
+Use the dashboard to help distinguish a local gateway/LAN problem, a WAN/ISP outage, an isolated destination failure, severe latency, and a monitoring-data gap. It is an observational aid; correlate its results with router, firewall, ISP, and monitoring-stack evidence before assigning root cause.
+
+## Architecture and data flow
+
+```text
+ICMP/HTTP probe targets
+  ├─ 192.168.1.1  (local gateway)
+  ├─ 1.1.1.1      (external target)
+  ├─ 8.8.8.8      (external target)
+  └─ google.com    (latency query only, when present in Prometheus)
+          │
+          ▼
+Blackbox Exporter
+  Generates probe_success and probe_duration_seconds
+          │
+          ▼
+Prometheus
+  Scrapes the Blackbox Exporter under job="internet" and stores time series
+          │
+          ▼
+Grafana 12.4
+  Queries Prometheus and renders state, latency, and rolling availability
+```
+
+The key metric semantics are:
+
+| Metric | Meaning |
+|---|---|
+| `probe_success` | `1` when the probe succeeded; `0` when it failed |
+| `probe_duration_seconds` | Total probe duration in seconds |
+
+## Completed dashboard layout
+
+The frozen dashboard has one full-width operational state panel above two diagnostic panels:
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│              Internet Connectivity State                    │
+│                    State timeline                            │
+├────────────────────────────────┬─────────────────────────────┤
+│       Internet Latency         │ Internet Availability      │
+│          Time series           │       Last Hour             │
+│                                │          Stat               │
+└────────────────────────────────┴─────────────────────────────┘
+```
+
+| Panel | Visualization | Operational question |
+|---|---|---|
+| Internet Connectivity State | State timeline | Exactly when and which target went down? |
+| Internet Latency | Time series | Was connectivity slow or degrading? |
+| Internet Availability - Last Hour | Stat | What percentage of the preceding hour was the selected target available? |
+
+## Panel 1 — Internet Connectivity State
+
+### Query
+
+```promql
+probe_success{job="internet",instance=~"192.168.1.1|1.1.1.1|8.8.8.8"}
+```
+
+### Configuration
+
+| Setting | Value |
+|---|---|
+| Title | `Internet Connectivity State` |
+| Data source | Prometheus |
+| Visualization | State timeline |
+| Legend/display name | `{{instance}}` |
+| Color scheme | `Classic palette (by series name)` |
+| Thresholds | Remove the numeric `80` threshold; do not use it to classify this binary metric |
+
+Configure exact value mappings as follows:
+
+| Value | Display text | Color |
+|---:|---|---|
+| `1` | `UP` | Green |
+| `0` | `DOWN` | Red |
+
+Enter only `UP` and `DOWN` in the mapping display-text fields. Do not enter labels such as `Display text: UP`, because Grafana will render that entire phrase literally.
+
+### Interpretation
+
+| Observed pattern | Likely interpretation; verify with other evidence |
+|---|---|
+| Gateway UP; both external targets DOWN | WAN/ISP or upstream failure is likely |
+| Gateway DOWN; external targets DOWN | Local gateway/LAN path or monitoring-host connectivity is suspect |
+| One external target DOWN; other targets UP | Isolated target, route, or probe issue is likely |
+| Blank/gap with no sample | **NO DATA**, not proven downtime |
+
+Important: `192.168.1.1` has no historical samples before approximately 11:20–11:25 because the gateway probe was added later. Grafana must leave that period as missing data. Do not count or describe it as downtime.
+
+## Panel 2 — Internet Latency
+
+### Query
+
+```promql
+probe_duration_seconds{job="internet",instance=~"1.1.1.1|8.8.8.8|google.com"} * 1000
+```
+
+### Configuration
+
+| Setting | Value |
+|---|---|
+| Title | `Internet Latency` |
+| Data source | Prometheus |
+| Visualization | Time series |
+| Unit | **Standard options → Unit → Time → milliseconds (ms)** |
+
+The metric is emitted in seconds. Multiplication by `1000` converts it to milliseconds before display. Grafana may automatically format large millisecond values as seconds on the axis; this does not change the PromQL result.
+
+The latency query includes `google.com` because that was part of the completed query. A series appears only if Prometheus has a matching `instance` label. The State Timeline intentionally uses the gateway plus `1.1.1.1` and `8.8.8.8` instead.
+
+## Panel 3 — Internet Availability - Last Hour
+
+### Query
+
+```promql
+avg_over_time(probe_success{job="internet",instance="1.1.1.1"}[1h]) * 100
+```
+
+### Configuration
+
+| Setting | Value |
+|---|---|
+| Title | `Internet Availability - Last Hour` |
+| Data source | Prometheus |
+| Visualization | Stat |
+| Unit | **Standard options → Unit → Misc → Percent (0-100)** |
+| Threshold mode | Absolute |
+
+Configure thresholds in ascending operational ranges:
+
+| Range | Color | Grafana threshold entry |
+|---|---|---|
+| Below `99` | Red | Base = red |
+| `99` to below `99.9` | Yellow | `99` = yellow |
+| `99.9` and above | Green | `99.9` = green |
+
+Each displayed point is the average of `probe_success` samples during its preceding one-hour window, multiplied by 100. It is a rolling measure, not the availability of the entire visible dashboard time range. An outage therefore ages out gradually as its samples leave the one-hour window.
+
+## Grafana 12.4 UI-specific lessons
+
+1. The percentage unit is under **Standard options → Unit → Misc → Percent (0-100)**.
+2. The latency unit is under **Standard options → Unit → Time → milliseconds (ms)**.
+3. For this State Timeline, `Classic palette (by series name)` allowed the explicit colors assigned in the value mappings to render correctly.
+4. `From thresholds (by value)` produced threshold-derived labels such as `< 80` or `-∞+` instead of the required semantic state labels in this Grafana 12.4 installation.
+5. Remove the default `80` threshold from the binary `probe_success` State Timeline. An `80` threshold has no meaning for values limited to `0` and `1`.
+6. Use `{{instance}}` in the query legend/display-name field to render clean row labels instead of full label sets such as `{instance="1.1.1.1"}`.
+7. Save the panel and then save the dashboard after material changes. An unnamed, unsaved dashboard can disappear when navigating away.
+8. The dashboard `+` control adds a panel/visualization to the current dashboard; it does not create another dashboard.
+
+## Verification observations
+
+The completed baseline was visually verified in Grafana 12.4:
+
+- all three expected State Timeline rows appeared: `1.1.1.1`, `192.168.1.1`, and `8.8.8.8`;
+- `probe_success=1` rendered as green `UP`;
+- `probe_success=0` rendered as red `DOWN`;
+- the State Timeline legend recognized `UP` and `DOWN`;
+- `1.1.1.1` showed two short red outage events;
+- `8.8.8.8` showed one short red outage event in the final inspected view;
+- `192.168.1.1` showed no red event during the period for which it had data;
+- missing history for `192.168.1.1` before approximately 11:20–11:25 remained no-data rather than being colored as downtime;
+- latency spikes approached approximately `5000 ms` around the incident period, near the configured five-second probe timeout discussed during setup;
+- rolling availability fell to roughly `97.5%` during the observed problem, recovered as failed samples aged out, and displayed `100%` as green after threshold correction;
+- a later `99.9%` reading confirmed that the rolling one-hour Stat captured a recent probe failure.
+
+Event counts and times above describe the captured verification window, not permanent expectations.
+
+## Troubleshooting and lessons learned
+
+### State Timeline shows `< 80` or `-∞+`
+
+- Confirm the query returns raw `probe_success` values.
+- Delete the numeric `80` threshold.
+- Confirm exact mappings: `1 → UP` green and `0 → DOWN` red.
+- Select `Classic palette (by series name)` for the verified Grafana 12.4 behavior.
+
+### Timeline says `Display text: UP`
+
+Edit the mapping and make the Display text field contain only `UP` or `DOWN`.
+
+### Rows show full Prometheus label sets
+
+Set the query legend/display name to `{{instance}}`.
+
+### Availability is red at 100%
+
+The default thresholds are reversed for an availability KPI. Set Base red, `99` yellow, and `99.9` green in Absolute mode.
+
+### Availability does not immediately return to 100%
+
+This is expected. `avg_over_time(...[1h])` uses a rolling one-hour window, so failed samples continue to affect the result until they age out.
+
+### A target has a blank historical segment
+
+Check when the target was added and whether Prometheus scraped samples during the gap. A blank area is no-data. It is not equivalent to `probe_success=0` and must not be reported as an outage without corroborating evidence.
+
+### A panel appears to have disappeared
+
+Confirm the correct dashboard is open and saved. During initial construction, panels were temporarily split between the intended dashboard and an unsaved `New dashboard`. The baseline consolidates all three panels under **Home Internet Outage Monitoring**.
+
+### A latency series is absent
+
+Check whether its exact `instance` label exists. In particular, `google.com` will not appear unless it is configured and scraped under `job="internet"`.
+
+## Command and query reference
+
+### PromQL quick checks
+
+Run these in Grafana Explore or the Prometheus expression browser.
+
+Current/recent binary connectivity states:
+
+```promql
+probe_success{job="internet",instance=~"192.168.1.1|1.1.1.1|8.8.8.8"}
+```
+
+Latency converted to milliseconds:
+
+```promql
+probe_duration_seconds{job="internet",instance=~"1.1.1.1|8.8.8.8|google.com"} * 1000
+```
+
+Rolling one-hour availability percentage for `1.1.1.1`:
+
+```promql
+avg_over_time(probe_success{job="internet",instance="1.1.1.1"}[1h]) * 100
+```
+
+Confirm which targets currently exist under the Internet job:
+
+```promql
+count by (instance) (probe_success{job="internet"})
+```
+
+Check for failed probes in the selected Grafana time range:
+
+```promql
+probe_success{job="internet"} == 0
+```
+
+### Service endpoints
+
+Use the environment's actual host names or IP addresses where placeholders appear.
+
+| Purpose | Endpoint |
+|---|---|
+| Grafana dashboard UI | `http://192.168.1.114:3000` |
+| Prometheus expression browser | `http://<prometheus-host>:9090/graph` |
+| Prometheus targets and scrape status | `http://<prometheus-host>:9090/targets` |
+| Blackbox Exporter metrics | `http://<blackbox-host>:9115/metrics` |
+
+Example read-only checks from a shell:
+
+```bash
+curl -fsS http://<prometheus-host>:9090/-/ready
+curl -fsS http://<blackbox-host>:9115/metrics
+curl -G -fsS http://<prometheus-host>:9090/api/v1/query \
+  --data-urlencode 'query=probe_success{job="internet"}'
+```
+
+If the stack is managed with Docker Compose, run these from the directory containing its Compose file:
+
+```bash
+docker compose ps
+docker compose logs --tail=100 prometheus
+docker compose logs --tail=100 blackbox-exporter
+docker compose logs --tail=100 grafana
+```
+
+Service names can differ by Compose file. Use `docker compose ps` to confirm them before requesting logs.
+
+## Freeze and baseline status
+
+This dashboard configuration is the **frozen operational baseline**. Preserve the three-panel layout, PromQL, legend, units, mappings, and thresholds documented here before adding new monitoring capabilities.
+
+For future changes:
+
+1. create a tracked change or new runbook revision;
+2. record the reason and expected result;
+3. change one panel behavior at a time;
+4. verify state colors, no-data behavior, labels, units, and thresholds;
+5. save both the panel and dashboard; and
+6. update this runbook after the new behavior is accepted as the baseline.
+
