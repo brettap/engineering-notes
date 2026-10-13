@@ -244,6 +244,21 @@ function Invoke-SAM012Bounded {
     }
 }
 
+function ConvertTo-SAM012ShareAccessType {
+    param($Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $valueProperty = @($Value.Keys | Where-Object { [string]$_ -ceq 'Value' } | Select-Object -First 1)
+        if ($valueProperty.Count -gt 0 -and $Value[$valueProperty[0]] -is [string]) { return $Value[$valueProperty[0]] }
+    }
+    $valueProperty = @($Value.PSObject.Properties | Where-Object { $_.Name -ceq 'Value' -and $_.Value -is [string] } | Select-Object -First 1)
+    if ($valueProperty.Count -gt 0) { return $valueProperty[0].Value }
+    if ($Value -is [System.Enum]) { return $Value.ToString() }
+    return [string]$Value
+}
+
 function Test-SAM012Evidence {
     param([string]$Kind, $Evidence, $Target, $Options, [datetime]$NowUtc)
     $fail = @(); $warn = @(); $unknown = @()
@@ -297,10 +312,10 @@ function Test-SAM012Evidence {
                 if ($s.Count -ne 1) { $fail += "$name not published exactly once."; continue }
                 if ([string]::IsNullOrWhiteSpace($s[0].Sddl)) { $unknown += "$name NTFS ACL missing." }
                 $allow = @($s[0].ShareAcl | Where-Object {
-                    $_.AccessControlType -eq 'Allow' -and $_.AccountName -in @('Everyone', 'NT AUTHORITY\Authenticated Users', 'TECHWORKS\Domain Computers')
+                    (ConvertTo-SAM012ShareAccessType $_.AccessControlType) -eq 'Allow' -and $_.AccountName -in @('Everyone', 'NT AUTHORITY\Authenticated Users', 'TECHWORKS\Domain Computers')
                 })
                 if ($allow.Count -eq 0) { $fail += "$name lacks a recognized ordinary-client share grant (review localized principals)." }
-                if (@($s[0].ShareAcl | Where-Object { $_.AccessControlType -eq 'Deny' }).Count -gt 0) { $warn += "$name has deny ACEs; effective access requires review." }
+                if (@($s[0].ShareAcl | Where-Object { (ConvertTo-SAM012ShareAccessType $_.AccessControlType) -eq 'Deny' }).Count -gt 0) { $warn += "$name has deny ACEs; effective access requires review." }
                 if ($name -eq 'SYSVOL' -and ($null -eq $s[0].Policy -or [string]::IsNullOrWhiteSpace($s[0].Policy.Sddl))) { $unknown += 'Policy-file ACL evidence absent.' }
             }
         }

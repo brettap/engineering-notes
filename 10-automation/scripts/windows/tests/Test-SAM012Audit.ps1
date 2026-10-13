@@ -32,6 +32,24 @@ function Assert-SAM012HtmlEvidence {
     $event = (Find-Check $decoded 'DC-02/Events:System').Evidence.Events[0]
     Assert-True ($event.Message -ceq $ExpectedMessage) 'HTML evidence did not preserve the event message.'
 }
+function New-SAM012SerializedEnum {
+    param([string]$Name)
+    $number = 0
+    if ($Name -eq 'Deny') { $number = 1 }
+    $value = [System.Collections.Specialized.OrderedDictionary]::new([StringComparer]::Ordinal)
+    $value.Add('value', $number)
+    $value.Add('Value', $Name)
+    return ,$value
+}
+function Get-SAM012ShareEvaluation {
+    param([object[]]$Aces)
+    $shares = @(
+        [pscustomobject]@{ Name = 'SYSVOL'; Sddl = 'O:SYG:SYD:(A;;FR;;;AU)'; ShareAcl = @($Aces); Policy = [pscustomobject]@{ Sddl = 'O:SYG:SYD:(A;;FR;;;AU)' } }
+        [pscustomobject]@{ Name = 'NETLOGON'; Sddl = 'O:SYG:SYD:(A;;FR;;;AU)'; ShareAcl = @($Aces); Policy = $null }
+    )
+    Test-SAM012Evidence -Kind 'Shares' -Evidence ([pscustomobject]@{ Shares = $shares }) `
+        -Target ([pscustomobject]@{ Name = 'Techworks-DC01' }) -Options @{} -NowUtc ([datetime]::UtcNow)
+}
 
 # AST syntax check and mutating-command boundary, including embedded collectors.
 $modulePath = Join-Path $PSScriptRoot '../SAM012Audit.psm1'
@@ -81,6 +99,28 @@ Run-Case 'sam002-acl-and-machine' {
     param($r); Assert-True ((Find-Check $r 'Techworks-DC01/Shares').Status -eq 'FAIL') 'Admin-only ACL passed.'
     Assert-True ((Find-Check $r 'Techworks-DC01/MachineRead').Status -eq 'FAIL') 'Machine failure masked.'
 }
+$recognizedPrincipals = @('Everyone', 'NT AUTHORITY\Authenticated Users', 'TECHWORKS\Domain Computers')
+foreach ($principal in $recognizedPrincipals) {
+    $plainStringResult = Get-SAM012ShareEvaluation -Aces @(@{ AccountName = $principal; AccessControlType = 'Allow'; AccessRight = 'Read' })
+    Assert-True ($plainStringResult.Status -eq 'PASS') "Plain-string grant for $principal was rejected."
+}
+$script:passed++; Write-Output 'PASS share-plain-string-recognized-principals'
+$nestedAllowResult = Get-SAM012ShareEvaluation -Aces @(@{ AccountName = 'Everyone'; AccessControlType = (New-SAM012SerializedEnum 'Allow'); AccessRight = 'Read' })
+Assert-True ($nestedAllowResult.Status -eq 'PASS') 'Nested enum Allow grant was rejected.'
+$script:passed++; Write-Output 'PASS share-nested-enum-allow'
+$nestedDenyResult = Get-SAM012ShareEvaluation -Aces @(@{ AccountName = 'Everyone'; AccessControlType = (New-SAM012SerializedEnum 'Deny'); AccessRight = 'Read' })
+Assert-True ($nestedDenyResult.Status -eq 'FAIL') 'Deny-only share ACE passed as an ordinary-client grant.'
+Assert-True (@($nestedDenyResult.Findings | Where-Object { $_ -like '*has deny ACEs*' }).Count -eq 2) 'Nested enum deny ACE warning was missed.'
+$script:passed++; Write-Output 'PASS share-nested-enum-deny'
+$mixedDenyResult = Get-SAM012ShareEvaluation -Aces @(
+    @{ AccountName = 'Everyone'; AccessControlType = 'Allow'; AccessRight = 'Read' }
+    @{ AccountName = 'Everyone'; AccessControlType = (New-SAM012SerializedEnum 'Deny'); AccessRight = 'Read' }
+)
+Assert-True ($mixedDenyResult.Status -eq 'WARN') 'Deny ACE did not warn when a recognized allow grant was present.'
+$script:passed++; Write-Output 'PASS share-allow-with-deny-warning'
+$adminOnlyResult = Get-SAM012ShareEvaluation -Aces @(@{ AccountName = 'BUILTIN\Administrators'; AccessControlType = (New-SAM012SerializedEnum 'Allow'); AccessRight = 'Full' })
+Assert-True ($adminOnlyResult.Status -eq 'FAIL') 'Nested enum administrator-only ACL passed.'
+$script:passed++; Write-Output 'PASS share-nested-enum-admin-only'
 Run-Case 'ordinary-user-denied' { param($f); (Get-Evidence $f 'Techworks-DC01/UserRead').Reads[0].Readable = $false } {
     param($r); Assert-True ((Find-Check $r 'Techworks-DC01/UserRead').Status -eq 'FAIL') 'User denial masked.'
 }

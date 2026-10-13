@@ -79,7 +79,7 @@ Missing prerequisites fail before collection where possible. Query authorization
 
 There are **27 mandatory DC checks**, including five event channels per DC and one DC02-to-DC01 offset check. Healthy-and-complete requires every mandatory check to PASS with complete evidence. A normal run without ordinary-user credentials and external machine evidence is intentionally incomplete.
 
-Share principal-name evaluation supports the documented English TechWorks baseline. Localized/unrecognized grants require manual review. Captured SDDL/ACLs are evidence, not a complete effective-permissions engine. AD replication checks and DFSR event/service observations do not prove complete SYSVOL content convergence.
+Share principal-name evaluation supports the documented English TechWorks baseline. Localized/unrecognized grants require manual review. The SAM-012.3 false positive occurred because remoting returned `AccessControlType` as an enum-shaped object (`value` plus `Value`), while the evaluator compared that object directly with the string `Allow`. SAM-012.4 normalizes plain strings, serialized enum values and enum instances before evaluating `Allow` and `Deny`; the recognized-principal policy is unchanged. This corrects share-ACL recognition only: captured SDDL/ACLs are not a complete effective-permissions engine, and an Everyone share grant does not prove NTFS or actual client access. AD replication checks and DFSR event/service observations do not prove complete SYSVOL content convergence.
 
 ## Optional Client Checks
 
@@ -191,11 +191,11 @@ Run the dependency-free harness using PowerShell; it writes only local fixtures/
     -OutputDirectory C:\TechWorks\Reports\SAM-012-fixture-tests
 ```
 
-The healthy fixture builder contains deterministic, synthetic data. Mutated cases exercise unreachable/wrong DC identity, SAM-002 administrator-only share grants and machine denial, user denial, missing/stale machine evidence, SAM-003 single-resolver clients, failed/missing/stale replication, SAM-011 free-running time, unsupported time output, offset thresholds/partial samples, missing SRV records, stopped services, denied permissions, truncated/wrong-host events, HTML escaping, role disagreement, malformed evidence, invalid thresholds and bounded local jobs. Fixture tests explicitly fail if live collection is attempted.
+The healthy fixture builder contains deterministic, synthetic data. Mutated cases exercise unreachable/wrong DC identity, SAM-002 administrator-only share grants and machine denial, user denial, missing/stale machine evidence, SAM-003 single-resolver clients, failed/missing/stale replication, SAM-011 free-running time, unsupported time output, offset thresholds/partial samples, missing SRV records, stopped services, denied permissions, truncated/wrong-host events, HTML escaping, role disagreement, malformed evidence, invalid thresholds and bounded local jobs. Direct evaluator regressions cover plain-string grants for every recognized ordinary-client principal, nested enum Allow and Deny values, deny warnings, and enum-shaped administrator-only ACLs. Fixture tests explicitly fail if live collection is attempted.
 
 Test acceptance requires successful JSON/CSV round trips, standalone escaped HTML, separate mandatory/optional summaries and no forbidden mutating commands/switches in the module AST/source. Static review remains necessary for indirect invocation and Windows-specific query behavior; AST checks are not a security sandbox.
 
-**Validation limit:** Linux PowerShell 7 can execute the portable evaluators/fixtures and parse PowerShell syntax. It cannot establish Windows PowerShell 5.1 execution, RSAT availability, native output behavior, existing WinRM/SMB permissions or live AD health. Run the same harness under Windows PowerShell 5.1 as the next local acceptance gate. Any real-host audit requires separate authorization; no fault injection is part of acceptance.
+**SAM-012.4 validation (October 13, 2026):** the complete local fixture suite passed under Windows PowerShell 7.6.6: 45 tests passed, including the new share ACL evaluator regressions. No live audit was rerun. **Remaining validation limit:** Windows PowerShell 5.1 execution, RSAT availability, native output behavior, existing WinRM/SMB permissions and live AD health remain unverified. Any real-host audit requires separate authorization; no fault injection is part of acceptance.
 
 ## Read-Only Command Boundary
 
