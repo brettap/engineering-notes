@@ -20,6 +20,18 @@ function Run-Case {
     Write-Output ('PASS ' + $Name)
 }
 function Find-Check { param($Report, $Id); $Report.Checks | Where-Object { $_.CheckId -eq $Id } }
+function Assert-SAM012HtmlEvidence {
+    param([string]$Html, [string]$ExpectedMessage)
+    $blocks = [regex]::Matches($Html, '<pre>([\s\S]*?)</pre>')
+    Assert-True ($blocks.Count -eq 1) 'Expected one HTML evidence block.'
+    $encoded = $blocks[0].Groups[1].Value
+    $json = [Net.WebUtility]::HtmlDecode($encoded)
+    # Check HTML encoding independently of the JSON serializer's escape style.
+    Assert-True ($encoded -ceq [Net.WebUtility]::HtmlEncode($json)) 'Event HTML was not escaped.'
+    $decoded = $json | ConvertFrom-Json
+    $event = (Find-Check $decoded 'DC-02/Events:System').Evidence.Events[0]
+    Assert-True ($event.Message -ceq $ExpectedMessage) 'HTML evidence did not preserve the event message.'
+}
 
 # AST syntax check and mutating-command boundary, including embedded collectors.
 $modulePath = Join-Path $PSScriptRoot '../SAM012Audit.psm1'
@@ -125,8 +137,40 @@ Run-Case 'events-html-escape' {
         Id = 36; Level = 3; Message = '<script>alert("fixture")</script>'; Xml = '<Event/>' })
 } {
     param($r, $p); $html = Get-Content $p.Html -Raw
-    Assert-True ($html -notmatch '<script>' -and $html -match '&lt;script&gt;') 'Event HTML was not escaped.'
+    Assert-SAM012HtmlEvidence $html '<script>alert("fixture")</script>'
     Assert-True ((Find-Check $r 'DC-02/Events:System').Status -eq 'WARN') 'Historical event not flagged.'
+}
+Run-Case 'html-special-characters' {
+    param($f); (Get-Evidence $f 'DC-02/Events:System').Events = @(@{ Computer = 'DC-02'
+        Provider = 'fixture<&>"''provider'; Id = 36; Level = 3
+        Message = '</pre><script>alert("fixture")</script> & ''single'' "double" &lt; literal \u003c'; Xml = '<Event/>' })
+} {
+    param($r, $p)
+    $html = Get-Content $p.Html -Raw
+    $check = Find-Check $r 'DC-02/Events:System'
+    Assert-SAM012HtmlEvidence $html $check.Evidence.Events[0].Message
+    # Findings bypass JSON serialization, so exercise direct HTML text encoding too.
+    $finding = [Net.WebUtility]::HtmlEncode(($check.Findings -join '; '))
+    Assert-True ($html.Contains('<td>' + $finding + '</td>')) 'HTML findings did not encode special characters.'
+    Assert-True ($html -notmatch '<script\b') 'Event markup escaped its text container.'
+}
+Run-Case 'html-windows51-json-escapes' {
+    param($f); (Get-Evidence $f 'DC-02/Events:System').Events = @(@{ Computer = 'DC-02'
+        Provider = 'fixture'; Id = 36; Level = 3; Message = '<script> & ''single'' "double" </script>'; Xml = '<Event/>' })
+} {
+    param($r, $p)
+    # Reproduce Desktop JSON Unicode escapes locally without requiring Windows.
+    # PowerShell 5.1 has no ConvertTo-Json -EscapeHandling parameter.
+    $json = Get-Content $p.Json -Raw
+    $desktopJson = $json.Replace('<', '\u003c').Replace('>', '\u003e').Replace('&', '\u0026').Replace("'", '\u0027')
+    $html = '<pre>' + [Net.WebUtility]::HtmlEncode($desktopJson) + '</pre>'
+    Assert-True ($html -notmatch '&lt;script&gt;') 'Fixture did not reproduce the original false failure.'
+    Assert-SAM012HtmlEvidence $html '<script> & ''single'' "double" </script>'
+    # Negative control: removing HTML encoding must still fail the corrected test.
+    $rejected = $false
+    try { Assert-SAM012HtmlEvidence ('<pre>' + $desktopJson + '</pre>') '<script> & ''single'' "double" </script>' }
+    catch { $rejected = $_.Exception.Message -eq 'Event HTML was not escaped.' }
+    Assert-True $rejected 'Assertion accepted unencoded HTML evidence.'
 }
 Run-Case 'role-disagreement' { param($f); (Get-Evidence $f 'DC-02/Identity').Pdc = 'DC-02.techworks.local' } {
     param($r); Assert-True ($r.Summary.Health -eq 'FAIL') 'Cross-DC role disagreement passed.'
